@@ -3,66 +3,9 @@ from tkinter import *
 import tkinter.filedialog
 from tkinter import simpledialog
 import pastebin_handler
-
-class CustomScrollbar(Canvas):
-    def __init__(self, master, **kwargs):
-        kwargs.setdefault("width", 14)
-        kwargs.setdefault("bd", 0)
-        kwargs.setdefault("highlightthickness", 0)
-        super().__init__(master, **kwargs)
-        self.command = None
-        self.thumb = self.create_rectangle(0, 0, 0, 0, fill="#555", outline="")
-        self.bind("<Button-1>", self.on_press)
-        self.bind("<B1-Motion>", self.on_drag)
-        self.bind("<Configure>", lambda e: self.redraw())
-        self.y_top = 0.0
-        self.y_bottom = 1.0
-        self.click_offset = 0.0
-
-    def set(self, first, last):
-        self.y_top = float(first)
-        self.y_bottom = float(last)
-        self.redraw()
-
-    def redraw(self):
-        h = self.winfo_height()
-        w = self.winfo_width()
-        if h == 0: return
-        y0 = self.y_top * h
-        y1 = self.y_bottom * h
-        if y1 - y0 < 20:
-            y1 = y0 + 20
-            if y1 > h:
-                y0 = h - 20
-                y1 = h
-        self.coords(self.thumb, 2, y0, w-2, y1)
-
-    def on_press(self, event):
-        h = self.winfo_height()
-        if h == 0: return
-        y_frac = event.y / h
-        if self.y_top <= y_frac <= self.y_bottom:
-            self.click_offset = y_frac - self.y_top
-            self.dragging = True
-        else:
-            self.dragging = False
-            if self.command:
-                new_top = y_frac - (self.y_bottom - self.y_top)/2
-                self.command("moveto", new_top)
-
-    def on_drag(self, event):
-        if not getattr(self, 'dragging', False): return
-        h = self.winfo_height()
-        if h == 0: return
-        y_frac = event.y / h
-        new_top = y_frac - self.click_offset
-        if self.command:
-            self.command("moveto", new_top)
-    
-    def config(self, **kwargs):
-        if "command" in kwargs:
-            self.command = kwargs.pop("command")
-        super().config(**kwargs)
+from tkinter import ttk, messagebox
+from explorer import FileExplorer
+from custom_scrollbar import CustomScrollbar
 
 root = Tk()
 root.title("pym")
@@ -74,6 +17,8 @@ api_key = ""
 current_font_size = 12
 current_font_family = "Courier"
 is_dark_theme = False
+is_dirty = False
+current_file_path = None
 
 theme_light = {
     "bg": "white", "fg": "black", "insert": "black", 
@@ -143,13 +88,87 @@ def selectall(event=None):
     text_area.tag_add("sel", "1.0", "end")
     return "break"
 
-def saveas():
+def prompt_save():
+    global is_dirty
+    if not is_dirty:
+        return True
+
+    result = messagebox.askyesnocancel("pym", "you have unsaved changes. do you want to save them?")
+    if result is True:
+        return save()
+    elif result is False:
+        return True
+    else:
+        return False
+
+
+def toggle_explorer():
+    if explorer_frame.winfo_viewable():
+        main_pane.remove(explorer_frame)
+    else:
+        main_pane.add(explorer_frame, width=250, before=editor_frame)
+
+def load_file(path):
+    global current_file_path, is_dirty
+    with open(path, "r") as file:
+        text_area.delete("1.0", "end")
+        text_area.insert("1.0", file.read())
+        root.title(f"pym - {path}")
+        current_file_path = path
+        is_dirty = False
+        text_area.edit_modified(False)
+        update_line_numbers()
+
+def saveas(event=None):
+    global is_dirty, current_file_path
     t = text_area.get("1.0", "end-1c")
-    path = tkinter.filedialog.asksaveasfilename()
+    path = tkinter.filedialog.asksaveasfilename(initialfile=current_file_path)
     if path:
         with open(path, "w+") as output:
             output.write(t)
             root.title(f"pym - {path}")
+            is_dirty = False
+            current_file_path = path
+            text_area.edit_modified(False)
+            return True
+    return False
+
+def save(event=None):
+    if current_file_path and os.path.exists(current_file_path):
+        global is_dirty
+        t = text_area.get("1.0", "end-1c")
+        with open(current_file_path, "w") as output:
+            output.write(t)
+            is_dirty = False
+            text_area.edit_modified(False)
+            return True
+    else:
+        return saveas()
+
+def new_file(event=None):
+    global current_file_path, is_dirty
+    if not prompt_save():
+        return
+    text_area.delete("1.0", "end")
+    root.title("pym")
+    current_file_path = None
+    is_dirty = False
+    text_area.edit_modified(False)
+    update_line_numbers()
+
+def open_file(event=None):
+    global current_file_path, is_dirty
+    if not prompt_save():
+        return
+    path = tkinter.filedialog.askopenfilename()
+    if path:
+        load_file(path)
+
+def on_explorer_click(path):
+    if not prompt_save():
+        return
+    load_file(path)
+
 
 def set_pastebin_api_key():
     global api_key
@@ -195,7 +214,7 @@ def toggle_theme():
     apply_theme()
     save_config()
 
-def save_to_pastebin():
+def save2pastebin():
     if not api_key:
         popup("set a valid api_key in settings", True)
         return
@@ -214,6 +233,13 @@ def save_to_pastebin():
         popup(f"copied to clipboard: \n{result}", False)
     else:
         popup(f"pastebin rejected: {result}", True)
+
+def mark_dirty(event=None):
+    global is_dirty
+    is_dirty = True
+    update_line_numbers()
+    text_area.edit_modified(False)
+
 
 def update_line_numbers(event=None):
     lines = text_area.get("1.0", "end-1c").count("\n") + 1
@@ -236,38 +262,62 @@ def sync_scroll(*args):
         current_pos = text_area.yview()[0]
         line_numbers.yview_moveto(current_pos)
 
+def on_closing():
+    if prompt_save():
+        root.destroy()
+
 load_config()
 
 menubar = Menu(root, bd=0, activeborderwidth=0, relief="flat")
 
 file_menu = Menu(menubar, tearoff=0)
-file_menu.add_command(label="save", command=saveas, accelerator="ctrl+s")
-file_menu.add_command(label="save2pastebin", command=save_to_pastebin)
+
+file_menu.add_command(label="new file", command=new_file, accelerator="ctrl+n")
+file_menu.add_command(label="open file", command=open_file, accelerator="ctrl+o")
+file_menu.add_command(label="open folder", command=lambda: explorer.open_folder(), accelerator="ctrl+k")
+file_menu.add_command(label="save", command=save, accelerator="ctrl+s")
+file_menu.add_command(label="save2pastebin", command=save2pastebin)
 file_menu.add_separator()
-file_menu.add_command(label="exit", command=root.quit)
+file_menu.add_command(label="exit", command=on_closing, accelerator="ctrl+q")
 menubar.add_cascade(label="file", menu=file_menu)
 
+view_menu = Menu(menubar, tearoff=0)
+view_menu.add_command(label="toggle explorer", command=toggle_explorer)
+menubar.add_cascade(label="view", menu=view_menu)
+
 settings_menu = Menu(menubar, tearoff=0)
-settings_menu.add_command(label="pastebin_api_key", command=set_pastebin_api_key)
-settings_menu.add_command(label="font_family", command=change_font_family)
-settings_menu.add_command(label="font_size", command=change_font_size)
-settings_menu.add_command(label="toggle_theme", command=toggle_theme)
+settings_menu.add_command(label="pastebin api key", command=set_pastebin_api_key)
+settings_menu.add_command(label="font family", command=change_font_family)
+settings_menu.add_command(label="font size", command=change_font_size)
+settings_menu.add_command(label="toggle theme", command=toggle_theme)
 menubar.add_cascade(label="settings", menu=settings_menu)
 
 root.config(menu=menubar)
 
-main_frame = Frame(root)
-main_frame.pack(fill="both", expand=True)
+main_pane = PanedWindow(root, sashwidth=8, orient="horizontal")
+main_pane.pack(fill="both", expand=True)
 
-scrollbar = CustomScrollbar(main_frame)
+explorer_frame = Frame(main_pane)
+main_pane.add(explorer_frame, width=250)
+
+explorer = FileExplorer(explorer_frame, on_file_click=on_explorer_click)
+explorer.pack(fill="both", expand=True)
+
+editor_frame = Frame(main_pane)
+main_pane.add(editor_frame)
+
+scrollbar = CustomScrollbar(editor_frame)
 scrollbar.pack(side="right", fill="y")
 
-line_numbers = Text(main_frame, width=4, padx=5, takefocus=0, bd=0, highlightthickness=0, background="#f0f0f0", state="disabled")
+line_numbers = Text(editor_frame, width=4, padx=5, takefocus=0, bd=0, highlightthickness=0, background="#f0f0f0", state="disabled")
 line_numbers.pack(side="left", fill="y")
 line_numbers.tag_configure("right", justify="right")
 
-text_area = Text(main_frame, wrap="none", undo=True, bd=0, highlightthickness=0)
+text_area = Text(editor_frame, wrap="none", undo=True, bd=0, highlightthickness=0)
 text_area.pack(side="left", fill="both", expand=True)
+
+main_pane.paneconfigure(explorer_frame, minsize=100)
+main_pane.paneconfigure(editor_frame, minsize=400)
 
 update_font()
 apply_theme()
@@ -277,10 +327,16 @@ def on_text_scroll(*args):
     scrollbar.set(*args)
     line_numbers.yview_moveto(args[0])
 text_area.config(yscrollcommand=on_text_scroll)
-text_area.bind("<KeyRelease>", update_line_numbers)
+text_area.bind("<<Modified>>", mark_dirty)
 
 text_area.bind("<Control-a>", selectall)
-text_area.bind("<Control-s>", lambda x: saveas())
+text_area.bind("<Control-s>", save)
+text_area.bind("<Control-n>", new_file)
+text_area.bind("<Control-o>", open_file)
+text_area.bind("<Control-k>", explorer.open_folder)
+text_area.bind("<Control-q>", lambda e: on_closing())
+
+root.protocol("WM_DELETE_WINDOW", on_closing)
 
 update_line_numbers()
 
